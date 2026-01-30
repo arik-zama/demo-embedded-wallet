@@ -228,23 +228,12 @@ export default function Assets() {
       const rawAmount = BigInt(Math.floor(parseFloat(sendAmount) * Math.pow(10, CONFIDENTIAL_TOKEN_DECIMALS)))
       const requestedAmount = parseFloat(sendAmount)
 
-      // Pre-validation: Check revealed balance to warn about ERC-7984 silent failures
-      // ERC-7984 transfers 0 silently if balance is insufficient (doesn't revert unless zero balance)
+      // Log balance info for debugging but allow transfer regardless
       if (revealedBalance !== null) {
         const balance = parseFloat(revealedBalance)
-        if (balance === 0) {
-          setSendError("Cannot transfer: your balance is 0. ERC-7984 will revert.")
-          setIsSending(false)
-          return
-        }
         if (balance < requestedAmount) {
-          setSendError(`Insufficient balance: you have ${balance} ${CONFIDENTIAL_TOKEN_SYMBOL} but are trying to send ${requestedAmount}. Transfer would send 0.`)
-          setIsSending(false)
-          return
+          console.log("[Send] Warning: Requested amount exceeds revealed balance. ERC-7984 may transfer 0 or revert.")
         }
-      } else {
-        // No revealed balance - warn user but allow to proceed
-        console.log("[Send] Warning: Balance not revealed, cannot pre-validate transfer amount")
       }
 
       console.log("[Send] Creating encrypted input for amount:", rawAmount.toString())
