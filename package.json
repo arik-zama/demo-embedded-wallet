@@ -35,6 +35,7 @@
     "@turnkey/viem": "^0.9.7",
     "@turnkey/wallet-stamper": "^1.0.4",
     "@types/jsonwebtoken": "^9.0.7",
+    "@zama-fhe/relayer-sdk": "0.4.0-3",
     "alchemy-sdk": "^3.4.1",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",

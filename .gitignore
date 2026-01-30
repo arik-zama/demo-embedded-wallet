@@ -34,3 +34,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Zama fhEVM SDK (vendor files - copied from node_modules)
+public/fhevm/
+public/*.wasm

@@ -248,13 +248,14 @@ export const getTransactions = async (
  */
 export const getTurnkeyWalletClient = async (
   turnkeyClient: TurnkeyBrowserClient | TurnkeyServerClient,
-  signWith: string
+  signWith: string,
+  organizationId?: string
 ) => {
   // Create a new account using the provided Turnkey client and the specified account for signing
   const turnkeyAccount = await createAccount({
     // @ts-ignore - need to reconcile the TurnkeySDKClientConfig type between the sdk-server & sdk-browser SDKw
     client: turnkeyClient,
-    organizationId: turnkeyConfig.organizationId,
+    organizationId: organizationId ?? turnkeyConfig.organizationId,
     signWith,
   })
 
