@@ -104,6 +104,15 @@ export default function Assets() {
     initSdk()
   }, [scriptLoaded, sdkInstance])
 
+  // Reset state when wallet changes
+  useEffect(() => {
+    setRevealedBalance(null)
+    setEncryptedHandle(null)
+    setRevealError(null)
+    setSendError(null)
+    setSendSuccess(null)
+  }, [selectedAccount?.address])
+
   // Fetch encrypted balance handle on mount
   useEffect(() => {
     if (!selectedAccount?.address) return
