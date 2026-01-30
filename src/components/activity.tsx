@@ -4,10 +4,13 @@ import { useEffect, useState } from "react"
 import Link from "next/link"
 import { useTransactions } from "@/providers/transactions-provider"
 import { useWallets } from "@/providers/wallet-provider"
-import { ArrowDownIcon, ArrowUpIcon, LoaderIcon } from "lucide-react"
+import { ArrowDownIcon, ArrowUpIcon, LoaderIcon, Lock } from "lucide-react"
 import { formatEther } from "viem"
 
 import type { Transaction } from "@/types/web3"
+
+// Confidential token contract address (cUSDT on Sepolia)
+const CONFIDENTIAL_TOKEN_ADDRESS = "0xb6f50111A608b035c385c3FA79de77D8e3fef056".toLowerCase()
 import { useTokenPrice } from "@/hooks/use-token-price"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -132,21 +135,37 @@ export default function Activity() {
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <div className="font-medium">
-                        {transaction.value ? formatEther(transaction.value) : 0}{" "}
-                        <span className="text-xs text-muted-foreground">
-                          ETH
-                        </span>
-                      </div>
-                      <div className="text-sm text-muted-foreground">
-                        $
-                        {transaction.value
-                          ? (
-                              parseFloat(formatEther(transaction.value)) *
-                              (ethPrice ?? 0)
-                            ).toFixed(2)
-                          : 0}
-                      </div>
+                      {transaction.to?.toLowerCase() === CONFIDENTIAL_TOKEN_ADDRESS ? (
+                        // Confidential token transaction
+                        <div className="flex items-center gap-1">
+                          <Lock className="h-3 w-3 text-purple-500" />
+                          <span className="font-medium text-purple-600 dark:text-purple-400">
+                            cUSDT
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            (encrypted)
+                          </span>
+                        </div>
+                      ) : (
+                        // Regular ETH transaction
+                        <>
+                          <div className="font-medium">
+                            {transaction.value ? formatEther(transaction.value) : 0}{" "}
+                            <span className="text-xs text-muted-foreground">
+                              ETH
+                            </span>
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            $
+                            {transaction.value
+                              ? (
+                                  parseFloat(formatEther(transaction.value)) *
+                                  (ethPrice ?? 0)
+                                ).toFixed(2)
+                              : 0}
+                          </div>
+                        </>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))
@@ -156,7 +175,7 @@ export default function Activity() {
                     className="text-center text-muted-foreground"
                     colSpan={5}
                   >
-                    No activity. Send or receive ETH to see transactions here.
+                    No activity. Send or receive tokens to see transactions here.
                   </TableCell>
                 </TableRow>
               )}
