@@ -80,6 +80,7 @@ export default function Assets() {
   const [isSending, setIsSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [sendSuccess, setSendSuccess] = useState<string | null>(null)
+  const [sendTxHash, setSendTxHash] = useState<string | null>(null)
 
   // Initialize SDK
   useEffect(() => {
@@ -111,6 +112,7 @@ export default function Assets() {
     setRevealError(null)
     setSendError(null)
     setSendSuccess(null)
+    setSendTxHash(null)
   }, [selectedAccount?.address])
 
   // Fetch encrypted balance handle on mount
@@ -219,12 +221,36 @@ export default function Assets() {
     setIsSending(true)
     setSendError(null)
     setSendSuccess(null)
+    setSendTxHash(null)
 
     try {
       // Parse amount to raw units (6 decimals)
       const rawAmount = BigInt(Math.floor(parseFloat(sendAmount) * Math.pow(10, CONFIDENTIAL_TOKEN_DECIMALS)))
+      const requestedAmount = parseFloat(sendAmount)
+
+      // Pre-validation: Check revealed balance to warn about ERC-7984 silent failures
+      // ERC-7984 transfers 0 silently if balance is insufficient (doesn't revert unless zero balance)
+      if (revealedBalance !== null) {
+        const balance = parseFloat(revealedBalance)
+        if (balance === 0) {
+          setSendError("Cannot transfer: your balance is 0. ERC-7984 will revert.")
+          setIsSending(false)
+          return
+        }
+        if (balance < requestedAmount) {
+          setSendError(`Insufficient balance: you have ${balance} ${CONFIDENTIAL_TOKEN_SYMBOL} but are trying to send ${requestedAmount}. Transfer would send 0.`)
+          setIsSending(false)
+          return
+        }
+      } else {
+        // No revealed balance - warn user but allow to proceed
+        console.log("[Send] Warning: Balance not revealed, cannot pre-validate transfer amount")
+      }
 
       console.log("[Send] Creating encrypted input for amount:", rawAmount.toString())
+
+      // Store the balance handle before transfer for post-validation
+      const balanceHandleBefore = encryptedHandle
 
       // Create encrypted input
       const encryptedInput = sdkInstance.createEncryptedInput(
@@ -258,14 +284,48 @@ export default function Assets() {
       })
 
       console.log("[Send] Transaction hash:", hash)
-      setSendSuccess(`Transaction sent! Hash: ${hash.slice(0, 10)}...`)
+      setSendSuccess(`Waiting for confirmation...`)
 
-      // Reset form
-      setSendRecipient("")
-      setSendAmount("")
+      // Wait for transaction confirmation
+      const publicClient = getPublicClient()
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
 
-      // Reset revealed balance to force re-reveal
-      setRevealedBalance(null)
+      if (receipt.status === "success") {
+        console.log("[Send] Transaction confirmed:", receipt)
+
+        // Post-validation: Re-fetch balance handle to verify transfer happened
+        const newHandle = await publicClient.readContract({
+          address: CONFIDENTIAL_TOKEN_ADDRESS,
+          abi: ERC7984_ABI,
+          functionName: "confidentialBalanceOf",
+          args: [selectedAccount.address as `0x${string}`],
+        })
+
+        console.log("[Send] Balance handle before:", balanceHandleBefore?.toString())
+        console.log("[Send] Balance handle after:", newHandle.toString())
+
+        // If balance handle didn't change, transfer likely sent 0
+        if (balanceHandleBefore !== null && newHandle === balanceHandleBefore) {
+          console.log("[Send] WARNING: Balance handle unchanged - transfer likely sent 0")
+          setSendError("Transfer completed but your balance didn't change. This may indicate the transfer sent 0 tokens due to insufficient balance.")
+          setSendSuccess(null)
+          setSendTxHash(hash)
+        } else {
+          setSendSuccess("Transfer confirmed!")
+          setSendTxHash(hash)
+          // Reset form only on verified success
+          setSendRecipient("")
+          setSendAmount("")
+        }
+
+        // Update the handle and reset revealed balance to force re-reveal
+        setEncryptedHandle(newHandle)
+        setRevealedBalance(null)
+      } else {
+        console.log("[Send] Transaction reverted:", receipt)
+        setSendError("Transaction reverted on-chain")
+        setSendSuccess(null)
+      }
 
     } catch (err) {
       console.error("[Send] Failed:", err)
@@ -486,11 +546,42 @@ export default function Assets() {
                 disabled={isSending}
               />
             </div>
+            {revealedBalance === null && !sendError && !sendSuccess && (
+              <div className="rounded-md bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-3">
+                <p className="text-sm text-yellow-700 dark:text-yellow-400">
+                  Balance not revealed. Consider revealing first to verify you have sufficient funds.
+                </p>
+              </div>
+            )}
             {sendError && (
-              <p className="text-xs text-red-500">{sendError}</p>
+              <div className="rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-3">
+                <p className="text-sm text-red-700 dark:text-red-400">{sendError}</p>
+                {sendTxHash && (
+                  <a
+                    href={`https://sepolia.etherscan.io/tx/${sendTxHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-red-600 dark:text-red-300 underline mt-1 block"
+                  >
+                    View transaction on Etherscan
+                  </a>
+                )}
+              </div>
             )}
             {sendSuccess && (
-              <p className="text-xs text-green-500">{sendSuccess}</p>
+              <div className="rounded-md bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3">
+                <p className="text-sm text-green-700 dark:text-green-400">{sendSuccess}</p>
+                {sendTxHash && (
+                  <a
+                    href={`https://sepolia.etherscan.io/tx/${sendTxHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-green-600 dark:text-green-300 underline mt-1 block"
+                  >
+                    View transaction on Etherscan
+                  </a>
+                )}
+              </div>
             )}
             <Button
               className="w-full"
