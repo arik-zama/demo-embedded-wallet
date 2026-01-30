@@ -30,8 +30,9 @@ import { ScrollArea } from "./ui/scroll-area"
 const CONFIDENTIAL_TOKEN_ADDRESS = "0xb6f50111A608b035c385c3FA79de77D8e3fef056"
 const CONFIDENTIAL_TOKEN_DECIMALS = 6
 
-// Transfer event signature for parsing logs
-const TRANSFER_EVENT_SIGNATURE = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+// ConfidentialTransfer event signature (from cUSDT contract)
+// Event: ConfidentialTransfer(address indexed from, address indexed to, bytes32 indexed amount)
+const CONFIDENTIAL_TRANSFER_EVENT_SIGNATURE = "0x67500e8d0ed826d2194f514dd0d8124f35648ab6e3fb5e6ed867134cffe661e9"
 
 export default function Activity() {
   const { transactions: allTransactions, loading } = useTransactions()
@@ -97,22 +98,24 @@ export default function Activity() {
       // Fetch transaction receipt to get logs
       const receipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` })
 
-      // Find Transfer event from cUSDT contract
+      // Find ConfidentialTransfer event from cUSDT contract
+      // Event structure: ConfidentialTransfer(address indexed from, address indexed to, bytes32 indexed amount)
+      // topics[0] = event signature, topics[1] = from, topics[2] = to, topics[3] = amount handle
       const transferLog = receipt.logs.find(
         log =>
           log.address.toLowerCase() === CONFIDENTIAL_TOKEN_ADDRESS.toLowerCase() &&
-          log.topics[0] === TRANSFER_EVENT_SIGNATURE
+          log.topics[0] === CONFIDENTIAL_TRANSFER_EVENT_SIGNATURE
       )
 
-      if (!transferLog || !transferLog.data) {
-        console.log("[Activity] No Transfer event found in tx")
+      if (!transferLog || !transferLog.topics[3]) {
+        console.log("[Activity] No ConfidentialTransfer event found")
         setRevealedAmounts(prev => ({ ...prev, [txHash]: "N/A" }))
         return
       }
 
-      // The data field contains the encrypted amount handle
-      // For ERC-7984, this is typically an encrypted handle (euint64)
-      const encryptedHandle = BigInt(transferLog.data)
+      // The amount handle is in topics[3] (indexed bytes32)
+      const encryptedHandle = BigInt(transferLog.topics[3])
+      console.log("[Activity] Found ConfidentialTransfer, amount handle:", transferLog.topics[3])
 
       if (encryptedHandle === 0n) {
         setRevealedAmounts(prev => ({ ...prev, [txHash]: "0" }))
