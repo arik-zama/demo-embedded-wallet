@@ -281,35 +281,107 @@ export default function Assets() {
 
       if (receipt.status === "success") {
         console.log("[Send] Transaction confirmed:", receipt)
+        setSendTxHash(hash)
 
-        // Post-validation: Re-fetch balance handle to verify transfer happened
+        // Post-validation: Decrypt new balance to verify actual transfer
         const newHandle = await publicClient.readContract({
           address: CONFIDENTIAL_TOKEN_ADDRESS,
           abi: ERC7984_ABI,
           functionName: "confidentialBalanceOf",
           args: [selectedAccount.address as `0x${string}`],
         })
+        setEncryptedHandle(newHandle)
 
-        console.log("[Send] Balance handle before:", balanceHandleBefore?.toString())
-        console.log("[Send] Balance handle after:", newHandle.toString())
+        // If we had a revealed balance before, decrypt new balance and compare
+        const balanceBefore = revealedBalance !== null ? parseFloat(revealedBalance) : null
 
-        // If balance handle didn't change, transfer likely sent 0
-        if (balanceHandleBefore !== null && newHandle === balanceHandleBefore) {
-          console.log("[Send] WARNING: Balance handle unchanged - transfer likely sent 0")
-          setSendError("Transfer completed but your balance didn't change. This may indicate the transfer sent 0 tokens due to insufficient balance.")
-          setSendSuccess(null)
-          setSendTxHash(hash)
+        if (balanceBefore !== null && newHandle !== 0n) {
+          // Decrypt the new balance to verify
+          setSendSuccess("Verifying transfer...")
+          try {
+            const keypair = sdkInstance.generateKeypair()
+            const contractAddresses = [CONFIDENTIAL_TOKEN_ADDRESS]
+            const timestamp = Math.floor(Date.now() / 1000)
+            const duration = 1
+
+            const eip712 = sdkInstance.createEIP712(
+              keypair.publicKey,
+              contractAddresses,
+              timestamp,
+              duration
+            )
+
+            const signature = await walletClient.signTypedData({
+              domain: eip712.domain,
+              types: { UserDecryptRequestVerification: eip712.types.UserDecryptRequestVerification },
+              primaryType: "UserDecryptRequestVerification",
+              message: eip712.message,
+            })
+
+            const handleHexForDecrypt = "0x" + newHandle.toString(16).padStart(64, "0")
+            const handles = [{ handle: handleHexForDecrypt, contractAddress: CONFIDENTIAL_TOKEN_ADDRESS }]
+
+            const decrypted = await sdkInstance.userDecrypt(
+              handles,
+              keypair.privateKey,
+              keypair.publicKey,
+              signature,
+              contractAddresses,
+              selectedAccount.address,
+              timestamp,
+              duration
+            )
+
+            const values = Object.values(decrypted || {})
+            const newBalanceRaw = values[0] as bigint | number | undefined
+
+            if (newBalanceRaw !== undefined && newBalanceRaw !== null) {
+              const newBalance = Number(newBalanceRaw) / Math.pow(10, CONFIDENTIAL_TOKEN_DECIMALS)
+              const expectedNewBalance = balanceBefore - requestedAmount
+
+              console.log("[Send] Balance before:", balanceBefore)
+              console.log("[Send] Balance after:", newBalance)
+              console.log("[Send] Expected after:", expectedNewBalance)
+              console.log("[Send] Requested amount:", requestedAmount)
+
+              setRevealedBalance(newBalance.toFixed(2))
+
+              // Check if actual transfer amount matches requested
+              const actualTransferred = balanceBefore - newBalance
+              if (Math.abs(actualTransferred - requestedAmount) < 0.01) {
+                setSendSuccess(`Transfer confirmed! Sent ${actualTransferred.toFixed(2)} ${CONFIDENTIAL_TOKEN_SYMBOL}`)
+                setSendRecipient("")
+                setSendAmount("")
+              } else if (actualTransferred < 0.01) {
+                setSendError(`Transfer failed: 0 tokens were actually transferred (insufficient balance). Your balance remains ${newBalance.toFixed(2)} ${CONFIDENTIAL_TOKEN_SYMBOL}.`)
+                setSendSuccess(null)
+              } else {
+                setSendSuccess(`Transfer confirmed! Sent ${actualTransferred.toFixed(2)} ${CONFIDENTIAL_TOKEN_SYMBOL} (requested ${requestedAmount})`)
+                setSendRecipient("")
+                setSendAmount("")
+              }
+            } else {
+              // Couldn't decrypt, show basic success
+              setSendSuccess("Transfer confirmed!")
+              setRevealedBalance(null)
+              setSendRecipient("")
+              setSendAmount("")
+            }
+          } catch (decryptErr) {
+            console.error("[Send] Post-transfer decrypt failed:", decryptErr)
+            // Couldn't verify, show basic success
+            setSendSuccess("Transfer confirmed! (Could not verify amount)")
+            setRevealedBalance(null)
+            setSendRecipient("")
+            setSendAmount("")
+          }
         } else {
+          // No prior balance to compare, show basic success
           setSendSuccess("Transfer confirmed!")
-          setSendTxHash(hash)
-          // Reset form only on verified success
+          setRevealedBalance(null)
           setSendRecipient("")
           setSendAmount("")
         }
-
-        // Update the handle and reset revealed balance to force re-reveal
-        setEncryptedHandle(newHandle)
-        setRevealedBalance(null)
       } else {
         console.log("[Send] Transaction reverted:", receipt)
         setSendError("Transaction reverted on-chain")
