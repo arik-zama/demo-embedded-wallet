@@ -19,7 +19,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Loader2, Eye, Lock } from "lucide-react"
+import { Loader2, Eye, Lock, Send } from "lucide-react"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
 import { Icons } from "./icons"
 
@@ -37,6 +46,17 @@ const ERC7984_ABI = [
     inputs: [{ name: "account", type: "address" }],
     outputs: [{ name: "", type: "uint256" }],
   },
+  {
+    name: "confidentialTransfer",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "encryptedAmount", type: "bytes32" },
+      { name: "inputProof", type: "bytes" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
 ] as const
 
 export default function Assets() {
@@ -52,6 +72,14 @@ export default function Assets() {
   const [revealedBalance, setRevealedBalance] = useState<string | null>(null)
   const [isRevealing, setIsRevealing] = useState(false)
   const [revealError, setRevealError] = useState<string | null>(null)
+
+  // Transfer state
+  const [sendDialogOpen, setSendDialogOpen] = useState(false)
+  const [sendRecipient, setSendRecipient] = useState("")
+  const [sendAmount, setSendAmount] = useState("")
+  const [isSending, setIsSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  const [sendSuccess, setSendSuccess] = useState<string | null>(null)
 
   // Initialize SDK
   useEffect(() => {
@@ -174,6 +202,76 @@ export default function Assets() {
     }
   }
 
+  // Send confidential tokens
+  const handleSend = async () => {
+    if (!selectedAccount || !httpClient || !sdkInstance) return
+    if (!sendRecipient || !sendAmount) return
+
+    setIsSending(true)
+    setSendError(null)
+    setSendSuccess(null)
+
+    try {
+      // Parse amount to raw units (6 decimals)
+      const rawAmount = BigInt(Math.floor(parseFloat(sendAmount) * Math.pow(10, CONFIDENTIAL_TOKEN_DECIMALS)))
+
+      console.log("[Send] Creating encrypted input for amount:", rawAmount.toString())
+
+      // Create encrypted input
+      const encryptedInput = sdkInstance.createEncryptedInput(
+        CONFIDENTIAL_TOKEN_ADDRESS,
+        selectedAccount.address
+      )
+      encryptedInput.add64(rawAmount)
+      const { handles, inputProof } = await encryptedInput.encrypt()
+
+      // Convert Uint8Array to hex strings for viem
+      const handleHex = "0x" + Array.from(handles[0] as Uint8Array).map(b => b.toString(16).padStart(2, "0")).join("") as `0x${string}`
+      const proofHex = "0x" + Array.from(inputProof as Uint8Array).map(b => b.toString(16).padStart(2, "0")).join("") as `0x${string}`
+
+      console.log("[Send] Encrypted handle:", handleHex.slice(0, 20) + "...")
+      console.log("[Send] Input proof length:", proofHex.length)
+
+      // Get wallet client for signing transaction
+      const walletClient = await getTurnkeyWalletClient(
+        httpClient as any,
+        selectedAccount.address,
+        session?.organizationId
+      )
+
+      // Send the confidential transfer transaction
+      console.log("[Send] Sending confidentialTransfer to:", sendRecipient)
+      const hash = await walletClient.writeContract({
+        address: CONFIDENTIAL_TOKEN_ADDRESS,
+        abi: ERC7984_ABI,
+        functionName: "confidentialTransfer",
+        args: [sendRecipient as `0x${string}`, handleHex, proofHex],
+      })
+
+      console.log("[Send] Transaction hash:", hash)
+      setSendSuccess(`Transaction sent! Hash: ${hash.slice(0, 10)}...`)
+
+      // Reset form
+      setSendRecipient("")
+      setSendAmount("")
+
+      // Reset revealed balance to force re-reveal
+      setRevealedBalance(null)
+
+    } catch (err) {
+      console.error("[Send] Failed:", err)
+      const errorMessage = err instanceof Error ? err.message : "Transfer failed"
+      // Check for common errors
+      if (errorMessage.includes("gas required exceeds allowance") || errorMessage.includes("insufficient funds")) {
+        setSendError("Insufficient ETH for gas fees. Please add funds to your wallet first.")
+      } else {
+        setSendError(errorMessage)
+      }
+    } finally {
+      setIsSending(false)
+    }
+  }
+
   // Memoize the balance calculation
   const amount = useMemo(() => {
     return selectedAccount?.balance
@@ -263,7 +361,17 @@ export default function Assets() {
                   </TableCell>
                   <TableCell className="hidden sm:table-cell">
                     {revealedBalance !== null ? (
-                      <span>{revealedBalance}</span>
+                      <div className="flex items-center gap-2">
+                        <span>{revealedBalance}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSendDialogOpen(true)}
+                          className="h-6 px-2 text-xs"
+                        >
+                          <Send className="h-3 w-3" />
+                        </Button>
+                      </div>
                     ) : (
                       <Button
                         variant="ghost"
@@ -293,11 +401,21 @@ export default function Assets() {
                   {/* Mobile view */}
                   <TableCell className="p-2 sm:hidden">
                     {revealedBalance !== null ? (
-                      <div className="font-medium">
-                        {revealedBalance}
-                        <span className="ml-1 text-xs text-muted-foreground">
-                          {CONFIDENTIAL_TOKEN_SYMBOL}
-                        </span>
+                      <div className="flex items-center gap-2">
+                        <div className="font-medium">
+                          {revealedBalance}
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            {CONFIDENTIAL_TOKEN_SYMBOL}
+                          </span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSendDialogOpen(true)}
+                          className="h-6 px-2 text-xs"
+                        >
+                          <Send className="h-3 w-3" />
+                        </Button>
                       </div>
                     ) : (
                       <Button
@@ -327,6 +445,64 @@ export default function Assets() {
           )}
         </CardContent>
       </Card>
+
+      {/* Send Confidential Token Dialog */}
+      <Dialog open={sendDialogOpen} onOpenChange={setSendDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Send {CONFIDENTIAL_TOKEN_SYMBOL}</DialogTitle>
+            <DialogDescription>
+              Transfer confidential tokens. The amount will be encrypted before sending.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="recipient">Recipient Address</Label>
+              <Input
+                id="recipient"
+                placeholder="0x..."
+                value={sendRecipient}
+                onChange={(e) => setSendRecipient(e.target.value)}
+                disabled={isSending}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="amount">Amount ({CONFIDENTIAL_TOKEN_SYMBOL})</Label>
+              <Input
+                id="amount"
+                type="number"
+                placeholder="0.00"
+                value={sendAmount}
+                onChange={(e) => setSendAmount(e.target.value)}
+                disabled={isSending}
+              />
+            </div>
+            {sendError && (
+              <p className="text-xs text-red-500">{sendError}</p>
+            )}
+            {sendSuccess && (
+              <p className="text-xs text-green-500">{sendSuccess}</p>
+            )}
+            <Button
+              className="w-full"
+              onClick={handleSend}
+              disabled={isSending || !sendRecipient || !sendAmount || !sdkInstance}
+            >
+              {isSending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Encrypting & Sending...
+                </>
+              ) : (
+                <>
+                  <Send className="mr-2 h-4 w-4" />
+                  Send {CONFIDENTIAL_TOKEN_SYMBOL}
+                </>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
