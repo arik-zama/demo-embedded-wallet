@@ -1,14 +1,21 @@
 "use client"
 
 import { useMemo, useState, useEffect } from "react"
-import Script from "next/script"
 import { useWallets } from "@/providers/wallet-provider"
+import { useConfidential } from "@/providers/confidential-provider"
 import { useTurnkey } from "@turnkey/react-wallet-kit"
 import { formatEther } from "viem"
 
 import { truncateAddress } from "@/lib/utils"
 import { useTokenPrice } from "@/hooks/use-token-price"
 import { getTurnkeyWalletClient, getPublicClient } from "@/lib/web3"
+import { decryptAndFormat } from "@/lib/confidential"
+import {
+  CONFIDENTIAL_TOKEN_ADDRESS,
+  CONFIDENTIAL_TOKEN_SYMBOL,
+  CONFIDENTIAL_TOKEN_DECIMALS,
+  ERC7984_ABI,
+} from "@/config/confidential-tokens"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import {
@@ -32,42 +39,14 @@ import { Label } from "@/components/ui/label"
 
 import { Icons } from "./icons"
 
-// ERC-7984 Confidential Token on Sepolia (cUSDT)
-const CONFIDENTIAL_TOKEN_ADDRESS = "0xb6f50111A608b035c385c3FA79de77D8e3fef056" as const
-const CONFIDENTIAL_TOKEN_SYMBOL = "cUSDT"
-const CONFIDENTIAL_TOKEN_DECIMALS = 6
-
-// ERC-7984 ABI
-const ERC7984_ABI = [
-  {
-    name: "confidentialBalanceOf",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "account", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    name: "confidentialTransfer",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "to", type: "address" },
-      { name: "encryptedAmount", type: "bytes32" },
-      { name: "inputProof", type: "bytes" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const
-
 export default function Assets() {
   const { state } = useWallets()
   const { ethPrice } = useTokenPrice()
   const { selectedAccount } = state
   const { httpClient, session } = useTurnkey()
+  const { sdkInstance, sdkReady } = useConfidential()
 
   // Confidential token state
-  const [scriptLoaded, setScriptLoaded] = useState(false)
-  const [sdkInstance, setSdkInstance] = useState<any>(null)
   const [encryptedHandle, setEncryptedHandle] = useState<bigint | null>(null)
   const [revealedBalance, setRevealedBalance] = useState<string | null>(null)
   const [isRevealing, setIsRevealing] = useState(false)
@@ -81,29 +60,6 @@ export default function Assets() {
   const [sendError, setSendError] = useState<string | null>(null)
   const [sendSuccess, setSendSuccess] = useState<string | null>(null)
   const [sendTxHash, setSendTxHash] = useState<string | null>(null)
-
-  // Initialize SDK
-  useEffect(() => {
-    const existingSdk = (window as any).relayerSDK
-    if (existingSdk && !scriptLoaded) {
-      setScriptLoaded(true)
-    }
-    if (!scriptLoaded) return
-
-    const initSdk = async () => {
-      if (sdkInstance) return
-      try {
-        const sdk = (window as any).relayerSDK
-        if (!sdk) return
-        await sdk.initSDK()
-        const instance = await sdk.createInstance(sdk.SepoliaConfig)
-        setSdkInstance(instance)
-      } catch (err) {
-        console.error("[SDK] Init failed:", err)
-      }
-    }
-    initSdk()
-  }, [scriptLoaded, sdkInstance])
 
   // Reset state when wallet changes
   useEffect(() => {
@@ -150,61 +106,15 @@ export default function Assets() {
         session?.organizationId
       )
 
-      const keypair = sdkInstance.generateKeypair()
-      const contractAddresses = [CONFIDENTIAL_TOKEN_ADDRESS]
-      const timestamp = Math.floor(Date.now() / 1000)
-      const duration = 1
-
-      const eip712 = sdkInstance.createEIP712(
-        keypair.publicKey,
-        contractAddresses,
-        timestamp,
-        duration
-      )
-
-      const signature = await walletClient.signTypedData({
-        domain: eip712.domain,
-        types: { UserDecryptRequestVerification: eip712.types.UserDecryptRequestVerification },
-        primaryType: "UserDecryptRequestVerification",
-        message: eip712.message,
-      })
-
-      console.log("[Reveal] Signature obtained:", signature.slice(0, 20) + "...")
-
-      // If handle is 0, balance is 0 (signature proves authorization, no decrypt needed)
-      if (encryptedHandle === 0n) {
-        console.log("[Reveal] Balance handle is 0, showing zero balance")
-        setRevealedBalance("0")
-        return
-      }
-
-      // Prepare handle for userDecrypt (non-zero balance)
-      const handleHex = "0x" + encryptedHandle.toString(16).padStart(64, "0")
-      const handles = [{ handle: handleHex, contractAddress: CONFIDENTIAL_TOKEN_ADDRESS }]
-
-      console.log("[Reveal] Calling userDecrypt for handle:", handleHex.slice(0, 20) + "...")
-      const decrypted = await sdkInstance.userDecrypt(
-        handles,
-        keypair.privateKey,
-        keypair.publicKey,
-        signature,
-        contractAddresses,
+      const formatted = await decryptAndFormat(
+        sdkInstance,
+        walletClient,
         selectedAccount.address,
-        timestamp,
-        duration
+        encryptedHandle
       )
 
-      console.log("[Reveal] Decrypted result:", decrypted)
-      // Response is { [handleHex]: decryptedValue } - extract the first value
-      const values = Object.values(decrypted || {})
-      const value = values[0]
-      if (value !== undefined && value !== null) {
-        const formatted = (Number(value) / Math.pow(10, CONFIDENTIAL_TOKEN_DECIMALS)).toFixed(2)
-        console.log("[Reveal] Formatted balance:", formatted)
-        setRevealedBalance(formatted)
-      } else {
-        setRevealedBalance("0")
-      }
+      console.log("[Reveal] Formatted balance:", formatted)
+      setRevealedBalance(formatted ?? "0")
     } catch (err) {
       console.error("[Reveal] Failed:", err)
       setRevealError(err instanceof Error ? err.message : "Reveal failed")
@@ -237,9 +147,6 @@ export default function Assets() {
       }
 
       console.log("[Send] Creating encrypted input for amount:", rawAmount.toString())
-
-      // Store the balance handle before transfer for post-validation
-      const balanceHandleBefore = encryptedHandle
 
       // Create encrypted input
       const encryptedInput = sdkInstance.createEncryptedInput(
@@ -296,57 +203,23 @@ export default function Assets() {
         const balanceBefore = revealedBalance !== null ? parseFloat(revealedBalance) : null
 
         if (balanceBefore !== null && newHandle !== 0n) {
-          // Decrypt the new balance to verify
           setSendSuccess("Verifying transfer...")
           try {
-            const keypair = sdkInstance.generateKeypair()
-            const contractAddresses = [CONFIDENTIAL_TOKEN_ADDRESS]
-            const timestamp = Math.floor(Date.now() / 1000)
-            const duration = 1
-
-            const eip712 = sdkInstance.createEIP712(
-              keypair.publicKey,
-              contractAddresses,
-              timestamp,
-              duration
-            )
-
-            const signature = await walletClient.signTypedData({
-              domain: eip712.domain,
-              types: { UserDecryptRequestVerification: eip712.types.UserDecryptRequestVerification },
-              primaryType: "UserDecryptRequestVerification",
-              message: eip712.message,
-            })
-
-            const handleHexForDecrypt = "0x" + newHandle.toString(16).padStart(64, "0")
-            const handles = [{ handle: handleHexForDecrypt, contractAddress: CONFIDENTIAL_TOKEN_ADDRESS }]
-
-            const decrypted = await sdkInstance.userDecrypt(
-              handles,
-              keypair.privateKey,
-              keypair.publicKey,
-              signature,
-              contractAddresses,
+            const newBalanceStr = await decryptAndFormat(
+              sdkInstance,
+              walletClient,
               selectedAccount.address,
-              timestamp,
-              duration
+              newHandle
             )
 
-            const values = Object.values(decrypted || {})
-            const newBalanceRaw = values[0] as bigint | number | undefined
-
-            if (newBalanceRaw !== undefined && newBalanceRaw !== null) {
-              const newBalance = Number(newBalanceRaw) / Math.pow(10, CONFIDENTIAL_TOKEN_DECIMALS)
-              const expectedNewBalance = balanceBefore - requestedAmount
-
+            if (newBalanceStr !== null) {
+              const newBalance = parseFloat(newBalanceStr)
               console.log("[Send] Balance before:", balanceBefore)
               console.log("[Send] Balance after:", newBalance)
-              console.log("[Send] Expected after:", expectedNewBalance)
               console.log("[Send] Requested amount:", requestedAmount)
 
-              setRevealedBalance(newBalance.toFixed(2))
+              setRevealedBalance(newBalanceStr)
 
-              // Check if actual transfer amount matches requested
               const actualTransferred = balanceBefore - newBalance
               if (Math.abs(actualTransferred - requestedAmount) < 0.01) {
                 setSendSuccess(`Transfer confirmed! Sent ${actualTransferred.toFixed(2)} ${CONFIDENTIAL_TOKEN_SYMBOL}`)
@@ -361,7 +234,6 @@ export default function Assets() {
                 setSendAmount("")
               }
             } else {
-              // Couldn't decrypt, show basic success
               setSendSuccess("Transfer confirmed!")
               setRevealedBalance(null)
               setSendRecipient("")
@@ -369,14 +241,12 @@ export default function Assets() {
             }
           } catch (decryptErr) {
             console.error("[Send] Post-transfer decrypt failed:", decryptErr)
-            // Couldn't verify, show basic success
             setSendSuccess("Transfer confirmed! (Could not verify amount)")
             setRevealedBalance(null)
             setSendRecipient("")
             setSendAmount("")
           }
         } else {
-          // No prior balance to compare, show basic success
           setSendSuccess("Transfer confirmed!")
           setRevealedBalance(null)
           setSendRecipient("")
@@ -391,7 +261,6 @@ export default function Assets() {
     } catch (err) {
       console.error("[Send] Failed:", err)
       const errorMessage = err instanceof Error ? err.message : "Transfer failed"
-      // Check for common errors
       if (errorMessage.includes("gas required exceeds allowance") || errorMessage.includes("insufficient funds")) {
         setSendError("Insufficient ETH for gas fees. Please add funds to your wallet first.")
       } else {
@@ -421,13 +290,6 @@ export default function Assets() {
 
   return (
     <>
-      {/* Load Relayer SDK for confidential tokens */}
-      <Script
-        src="/fhevm/relayer-sdk-js.umd.cjs"
-        strategy="afterInteractive"
-        onLoad={() => setScriptLoaded(true)}
-      />
-
       <Card>
         <CardHeader>
           <CardTitle className="text-lg sm:text-2xl">Assets</CardTitle>
@@ -507,7 +369,7 @@ export default function Assets() {
                         variant="ghost"
                         size="sm"
                         onClick={handleReveal}
-                        disabled={isRevealing || !sdkInstance}
+                        disabled={isRevealing || !sdkReady}
                         className="h-7 px-2 text-xs"
                       >
                         {isRevealing ? (
@@ -552,7 +414,7 @@ export default function Assets() {
                         variant="ghost"
                         size="sm"
                         onClick={handleReveal}
-                        disabled={isRevealing || !sdkInstance}
+                        disabled={isRevealing || !sdkReady}
                         className="h-7 px-2 text-xs"
                       >
                         {isRevealing ? (
@@ -647,7 +509,7 @@ export default function Assets() {
             <Button
               className="w-full"
               onClick={handleSend}
-              disabled={isSending || !sendRecipient || !sendAmount || !sdkInstance}
+              disabled={isSending || !sendRecipient || !sendAmount || !sdkReady}
             >
               {isSending ? (
                 <>
